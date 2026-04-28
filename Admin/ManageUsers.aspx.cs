@@ -15,8 +15,8 @@ public partial class ManageUsers : System.Web.UI.Page
     // =======================================================
     // EMAIL CREDENTIALS (Added for Notifications)
     // =======================================================
-    private readonly string senderEmail = "jayeshrsathawane123@gmail.com";
-    private readonly string senderAppPassword = "rewu zgww qzoa utkq";
+   private readonly string senderEmail = "enter email";
+    private readonly string senderAppPassword = "app password";
 
     protected void Page_Load(object sender, EventArgs e)
     {
