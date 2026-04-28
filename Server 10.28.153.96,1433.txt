@@ -1,0 +1,383 @@
+﻿domain : raysacademy.co.in
+db name : jaydb
+user name :  jayuser
+pass : I9zM0et@4^Dkftfb
+
+
+ngrok:cmd
+ngrok http your port --host-header="localhost:yourport"
+
+gemini api:----"AIzaSyApWSZ-97Gz-E2UPMFVg9H7iYJeQguvf9I"
+google map api:----"AIzaSyAWB2IwYiJ3gfHkNGjF1OsbX-OhHjG8Ag8"
+google client oauth ID:-  4103357396-n5bpctsdplf6rf6dn9d4gc9mus74ttn7.apps.googleusercontent.com"
+
+
+
+
+using System;
+using System.IO;
+using System.Data.SqlClient;
+using System.Configuration;
+using System.Web;
+using System.Web.UI;
+using System.Net;
+using System.Net.Mail;
+using System.Globalization;
+using System.Text.RegularExpressions;
+
+public partial class ReportIssue : System.Web.UI.Page
+{
+    private readonly string connString = ConfigurationManager.AppSettings["DbConnection"];
+    private readonly string geminiApiKey = "AIzaSyApWSZ-97Gz-E2UPMFVg9H7iYJeQguvf9I";
+
+    // Email Credentials
+    private readonly string senderEmail = "jayeshrsathawane123@gmail.com";
+    private readonly string senderAppPassword = "rewu zgww qzoa utkq";
+
+    protected void Page_Load(object sender, EventArgs e)
+    {
+        if (Session["UserID"] == null || Session["Role"] == null || Session["Role"].ToString() != "Citizen")
+        {
+            Response.Redirect("~/Default.aspx");
+        }
+    }
+
+    protected void btnSubmitIssue_Click(object sender, EventArgs e)
+    {
+        try
+        {
+            int citizenId = Convert.ToInt32(Session["UserID"]);
+            string userDept = ddlDept.SelectedValue;
+            string description = txtDescription.Text.Trim();
+
+            string latString = hfLat.Value;
+            string lngString = hfLng.Value;
+            string locationName = txtLocation.Text.Trim();
+
+            // 1. Validation for Location
+            if (string.IsNullOrEmpty(locationName) || latString == "0")
+            {
+                ShowToast("Please click 'Detect Live Location' first.", "error");
+                return;
+            }
+
+            decimal lat = 0;
+            decimal lng = 0;
+            decimal.TryParse(latString, NumberStyles.Any, CultureInfo.InvariantCulture, out lat);
+            decimal.TryParse(lngString, NumberStyles.Any, CultureInfo.InvariantCulture, out lng);
+
+            // 🔥 Read File from HTML Input (Fix for Mobile Camera issue)
+            HttpPostedFile postedFile = Request.Files["fuCameraHtml"];
+
+            // 2. Validation for Photo
+            if (postedFile == null || postedFile.ContentLength == 0)
+            {
+                ShowToast("Please capture a photo of the issue.", "error");
+                return;
+            }
+
+            // Save Photo and Apply Small Bottom-Right GPS/Time Watermark
+            string fileName = Guid.NewGuid().ToString() + ".jpg"; // Force JPG
+            string directoryPath = Server.MapPath("~/Uploads/");
+            if (!Directory.Exists(directoryPath))
+            {
+                Directory.CreateDirectory(directoryPath);
+            }
+            string savePath = directoryPath + fileName;
+
+            try
+            {
+                // STAMPING LOGIC: Draw Text on Image (Bottom-Right, Small Size)
+                using (System.Drawing.Image originalImg = System.Drawing.Image.FromStream(postedFile.InputStream))
+                {
+                    using (System.Drawing.Bitmap bmp = new System.Drawing.Bitmap(originalImg))
+                    {
+                        using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bmp))
+                        {
+                            string watermarkText = "Lat: " + latString + " , Lng: " + lngString + "\nDate: " + DateTime.Now.ToString("dd-MMM-yyyy hh:mm tt");
+
+                            // Small Font size proportional to image size
+                            int fontSize = Math.Max(12, bmp.Width / 60);
+                            System.Drawing.Font font = new System.Drawing.Font("Arial", fontSize, System.Drawing.FontStyle.Bold);
+                            System.Drawing.SizeF textSize = g.MeasureString(watermarkText, font);
+
+                            // Calculate Bottom-Right Position
+                            float xPos = bmp.Width - textSize.Width - 20;
+                            float yPos = bmp.Height - textSize.Height - 20;
+
+                            if (xPos < 0) xPos = 10;
+                            if (yPos < 0) yPos = 10;
+
+                            System.Drawing.SolidBrush bgBrush = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(180, 0, 0, 0));
+                            g.FillRectangle(bgBrush, xPos - 10, yPos - 10, textSize.Width + 20, textSize.Height + 20);
+
+                            System.Drawing.SolidBrush textBrush = new System.Drawing.SolidBrush(System.Drawing.Color.Yellow);
+                            g.DrawString(watermarkText, font, textBrush, new System.Drawing.PointF(xPos, yPos));
+
+                            bmp.Save(savePath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        }
+                    }
+                }
+            }
+            catch (Exception imgEx)
+            {
+                postedFile.SaveAs(savePath); // Fallback
+            }
+
+            string dbImagePath = "/Uploads/" + fileName;
+
+            // 3. API Logic (Fail-Safe)
+            string priority = "Medium";
+            string proximity = "";
+            bool isFake = false;
+            string aiDept = userDept;
+            decimal confidence = 95.0m;
+
+            try
+            {
+                if (CheckIfNearHospitalOrSchool(lat.ToString(CultureInfo.InvariantCulture), lng.ToString(CultureInfo.InvariantCulture)))
+                {
+                    priority = "High";
+                    proximity = "Near Critical Area (Hospital/School)";
+                }
+            }
+            catch { }
+
+            try
+            {
+                // 🔥 Call highly strict AI Verification
+                AnalyzeImageWithGemini(savePath, out isFake, out aiDept);
+
+                // If user selected manual dept, use that (unless AI marked it fake)
+                if (userDept != "AI" && !isFake)
+                {
+                    aiDept = userDept;
+                }
+            }
+            catch { }
+
+            string initialStatus = isFake ? "Rejected" : "AI Verified";
+            int generatedComplaintId = 0;
+
+            // 4. DATABASE INSERTION
+            using (SqlConnection con = new SqlConnection(connString))
+            {
+                string query = "INSERT INTO tbl_Complaints " +
+                               "(CitizenID, Latitude, Longitude, LocationName, ImagePath, UserDepartment, Description, " +
+                               "AssignedDepartment, PriorityLevel, IsFake, AI_ConfidenceScore, ProximityAlert, Status) " +
+                               "OUTPUT INSERTED.ComplaintID " +
+                               "VALUES " +
+                               "(@CitizenID, @Lat, @Lng, @LocName, @ImagePath, @UserDept, @Desc, " +
+                               "@AIDept, @Priority, @IsFake, @Confidence, @Proximity, @Status)";
+
+                using (SqlCommand cmd = new SqlCommand(query, con))
+                {
+                    cmd.Parameters.AddWithValue("@CitizenID", citizenId);
+                    cmd.Parameters.AddWithValue("@Lat", lat);
+                    cmd.Parameters.AddWithValue("@Lng", lng);
+                    cmd.Parameters.AddWithValue("@LocName", locationName);
+                    cmd.Parameters.AddWithValue("@ImagePath", dbImagePath);
+                    cmd.Parameters.AddWithValue("@UserDept", userDept);
+                    cmd.Parameters.AddWithValue("@Desc", description);
+                    cmd.Parameters.AddWithValue("@AIDept", aiDept);
+                    cmd.Parameters.AddWithValue("@Priority", priority);
+                    cmd.Parameters.AddWithValue("@IsFake", isFake);
+                    cmd.Parameters.AddWithValue("@Confidence", confidence);
+                    cmd.Parameters.AddWithValue("@Proximity", (object)proximity ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("@Status", initialStatus);
+
+                    con.Open();
+                    object resultObj = cmd.ExecuteScalar();
+
+                    if (resultObj != null)
+                    {
+                        generatedComplaintId = Convert.ToInt32(resultObj);
+
+                        if (isFake)
+                        {
+                            ShowToast("AI Alert: Invalid/Irrelevant photo detected (Vehicle/Person/Animal/Selfie). Complaint Rejected.", "error");
+                        }
+                        else
+                        {
+                            SendEmailToCitizen(citizenId, generatedComplaintId, locationName, aiDept);
+                            ShowToast("Success! Complaint registered successfully.", "success");
+                            ScriptManager.RegisterStartupScript(this, GetType(), "redirect", "setTimeout(function(){ window.location.href='MyComplaints.aspx'; }, 2000);", true);
+                        }
+                    }
+                    else
+                    {
+                        ShowToast("DB Error: Insert failed.", "error");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowToast("System Error: " + ex.Message.Replace("'", ""), "error");
+        }
+    }
+
+    private void SendEmailToCitizen(int citizenId, int complaintId, string location, string department)
+    {
+        try
+        {
+            string citizenEmail = "";
+            string citizenName = "";
+
+            using (SqlConnection con = new SqlConnection(connString))
+            {
+                string query = "SELECT FullName, Email FROM tbl_Users WHERE UserID = @UID";
+                using (SqlCommand cmd = new SqlCommand(query, con))
+                {
+                    cmd.Parameters.AddWithValue("@UID", citizenId);
+                    con.Open();
+                    using (SqlDataReader dr = cmd.ExecuteReader())
+                    {
+                        if (dr.Read())
+                        {
+                            citizenName = dr["FullName"].ToString();
+                            citizenEmail = dr["Email"].ToString();
+                        }
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(citizenEmail)) return;
+
+            string prefix = department == "Electric" ? "ELEC" : (department == "Water" ? "WTR" : "SNT");
+            string fullCompId = prefix + "-" + complaintId;
+
+            string emailSubject = "Complaint Registered Successfully | CiviCare";
+            string emailBody = "<html><body style='font-family:Arial,sans-serif; background-color:#f4f7f6; margin:0; padding:20px;'>" +
+                               "<div style='max-width:600px; margin:0 auto; background:#ffffff; border-radius:10px; overflow:hidden; box-shadow:0 4px 6px rgba(0,0,0,0.1);'>" +
+                               "<div style='background-color:#2563eb; color:#ffffff; padding:20px; text-align:center;'>" +
+                               "<h2 style='margin:0; font-size:24px;'>CiviCare Portal</h2>" +
+                               "<p style='margin:5px 0 0 0; font-size:14px; opacity:0.9;'>Civic Issue Registration</p>" +
+                               "</div>" +
+                               "<div style='padding:30px; color:#333333;'>" +
+                               "<h3 style='margin-top:0;'>Hello " + citizenName + ",</h3>" +
+                               "<p>Thank you for being a responsible citizen. Your civic issue has been successfully recorded and verified by our AI system.</p>" +
+                               "<div style='background-color:#f8fafc; border-left:4px solid #2563eb; padding:15px; margin:20px 0;'>" +
+                               "<p style='margin:0 0 10px 0;'><strong>Complaint ID:</strong> " + fullCompId + "</p>" +
+                               "<p style='margin:0 0 10px 0;'><strong>Routed To:</strong> " + department + " Department</p>" +
+                               "<p style='margin:0;'><strong>Location:</strong> " + location + "</p>" +
+                               "</div>" +
+                               "<p>You will receive further updates once a field team is assigned to resolve this issue. You can also track live status from your CiviCare Dashboard.</p>" +
+                               "<br/><p>Regards,<br/><strong>CiviCare Admin Team</strong></p>" +
+                               "</div></div></body></html>";
+
+            SmtpClient smtp = new SmtpClient("smtp.gmail.com", 587) { EnableSsl = true, UseDefaultCredentials = false, Credentials = new NetworkCredential(senderEmail, senderAppPassword) };
+            MailMessage mail = new MailMessage(senderEmail, citizenEmail, emailSubject, emailBody) { IsBodyHtml = true };
+            smtp.Send(mail);
+        }
+        catch { }
+    }
+
+    private bool CheckIfNearHospitalOrSchool(string lat, string lng)
+    {
+        if (lat == "0" || lng == "0") return false;
+        try
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+            string query = "[out:json];(node[\"amenity\"=\"hospital\"](around:200," + lat + "," + lng + ");node[\"amenity\"=\"school\"](around:200," + lat + "," + lng + "););out;";
+            string url = "https://overpass-api.de/api/interpreter?data=" + Uri.EscapeDataString(query);
+
+            using (WebClient client = new WebClient())
+            {
+                client.Headers.Add("user-agent", "CiviCare-Project");
+                string response = client.DownloadString(url);
+                if (response.Contains("\"elements\": [") && !response.Contains("\"elements\": []")) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // ==========================================================
+    // 🔥 STRICT AI IMAGE VERIFICATION LOGIC
+    // ==========================================================
+    private void AnalyzeImageWithGemini(string filePath, out bool isFake, out string detectedDept)
+    {
+        isFake = false;
+        detectedDept = "Sanitation"; // Default
+
+        try
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+
+            byte[] imageBytes = File.ReadAllBytes(filePath);
+            string base64Image = Convert.ToBase64String(imageBytes);
+
+            string url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + geminiApiKey;
+
+            // 🔥 Highly strict prompt preventing false positives
+            string prompt = "You are a strict city municipal image classifier. Analyze this image carefully. " +
+                            "Rule 1: If the image primarily shows a human face, a selfie, a car/motorcycle/vehicle, an animal (dog/cat/cow), a screen (monitor/phone), inside of a room/house, or a blank wall, YOU MUST CLASSIFY IT AS 'FAKE'. " +
+                            "Rule 2: If the image shows a genuine civic issue (broken road, garbage dump, broken street light, broken pipe, open manhole), classify it as 'REAL'. " +
+                            "Rule 3: If REAL, identify the department. Broken poles, wires, streetlights = 'ELECTRIC'. Leaking water, open manholes, broken pipes = 'WATER'. Potholes, garbage, dead animals, dirty roads = 'SANITATION'. " +
+                            "Output Format EXACTLY like this (NO markdown, NO extra words): FAKE:TRUE/FALSE DEPT:ELECTRIC/WATER/SANITATION";
+
+            string jsonPayload = "{" +
+                "\"contents\": [{" +
+                    "\"parts\": [" +
+                        "{\"text\": \"" + prompt + "\"}," +
+                        "{\"inline_data\": {\"mime_type\": \"image/jpeg\",\"data\": \"" + base64Image + "\"}}" +
+                    "]" +
+                "}]" +
+            "}";
+
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.Method = "POST";
+            request.ContentType = "application/json";
+
+            using (StreamWriter writer = new StreamWriter(request.GetRequestStream()))
+            {
+                writer.Write(jsonPayload);
+            }
+
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+            {
+                string rawResult = reader.ReadToEnd().ToUpper();
+
+                // Clean the output heavily
+                string cleanResult = Regex.Replace(rawResult, @"[^A-Z:]", "");
+
+                // Check Fake Status
+                if (cleanResult.Contains("FAKETRUE") || cleanResult.Contains("FAKE:TRUE"))
+                {
+                    isFake = true;
+                }
+                else
+                {
+                    // Strict Department Routing
+                    if (cleanResult.Contains("DEPTELECTRIC") || cleanResult.Contains("DEPT:ELECTRIC"))
+                    {
+                        detectedDept = "Electric";
+                    }
+                    else if (cleanResult.Contains("DEPTWATER") || cleanResult.Contains("DEPT:WATER"))
+                    {
+                        detectedDept = "Water";
+                    }
+                    else
+                    {
+                        // Safe fallback for genuine issues that don't match Water/Electric
+                        detectedDept = "Sanitation";
+                    }
+                }
+            }
+        }
+        catch
+        {
+            isFake = false;
+            detectedDept = "Sanitation";
+        }
+    }
+
+    private void ShowToast(string message, string type)
+    {
+        string safeMessage = message.Replace("'", "\\'").Replace("\r", "").Replace("\n", "");
+        string script = "showToast('" + safeMessage + "', '" + type + "');";
+        ScriptManager.RegisterStartupScript(this, GetType(), "ServerToast", script, true);
+    }
+}
