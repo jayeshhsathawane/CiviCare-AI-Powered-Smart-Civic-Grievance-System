@@ -13,11 +13,11 @@ public partial class ReportIssue : System.Web.UI.Page
     private readonly string connString = ConfigurationManager.AppSettings["DbConnection"];
     
     // Gemini API Key
-    private readonly string geminiApiKey = "AIzaSyBAKePKi_g02T5aIUpkZkFUGFlnlS1Hc6g";
+    private readonly string geminiApiKey = "enter your gemini api key";
 
     // Email Credentials
-    private readonly string senderEmail = "jayeshrsathawane123@gmail.com";
-    private readonly string senderAppPassword = "rewu zgww qzoa utkq";
+    private readonly string senderEmail = "enter your mail";
+    private readonly string senderAppPassword = "app password";
 
     protected void Page_Load(object sender, EventArgs e)
     {
