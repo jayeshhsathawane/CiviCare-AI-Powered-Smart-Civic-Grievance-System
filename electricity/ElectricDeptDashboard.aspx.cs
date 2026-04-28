@@ -12,9 +12,8 @@ public partial class ElectricDeptDashboard : System.Web.UI.Page
     private readonly string connString = ConfigurationManager.AppSettings["DbConnection"];
 
     // Email Credentials
-    private readonly string senderEmail = "jayeshrsathawane123@gmail.com";
-    private readonly string senderAppPassword = "rewu zgww qzoa utkq";
-
+    private readonly string senderEmail = "enter email";
+    private readonly string senderAppPassword = "app password";
     protected void Page_Load(object sender, EventArgs e)
     {
         if (Session["UserID"] == null || Session["Role"] == null || Session["Role"].ToString() != "Electric")
