@@ -571,7 +571,7 @@
             function renderGoogleButtons() {
                 if (typeof google !== 'undefined' && google.accounts) {
                     google.accounts.id.initialize({
-                        client_id: "4103357396-n5bpctsdplf6rf6dn9d4gc9mus74ttn7.apps.googleusercontent.com",
+                        client_id: "enter_your_googleclient ID ",
                         callback: handleGoogleLogin
                     });
 
