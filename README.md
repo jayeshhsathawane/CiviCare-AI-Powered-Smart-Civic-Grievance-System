@@ -53,4 +53,4 @@ The methodology, architecture, and findings of this project have been published.
 ### Application Setup
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/jayeshhsathawane/CiviCare.git](https://github.com/jayeshhsathawane/CiviCare: AI-Powered Smart Civic Grievance System.git)
+   git clone [https://github.com/jayeshhsathawane/CiviCare: AI-Powered Smart Civic Grievance System.git]
